@@ -15,7 +15,9 @@ show(file)
 - audio: metadata via `mediainfo` or `ffprobe`
 - other files: type information and a short hex dump
 
-Press `q` to close the viewer and restore the original layout. The tool fails outside interactive Pi sessions running in Herdr.
+Press `q` to close the viewer and restore the original layout. In text previews, press `v` to edit the original file with `$VISUAL` or `$EDITOR`. If the file changes before the viewer closes, the extension sends the agent an asynchronous steering message so it can re-read the file.
+
+The tool fails outside interactive Pi sessions running in Herdr.
 
 The system must provide `file` and `less`. Other viewers are optional; preview quality improves as more are available, and `chafa` is recommended for images.
 

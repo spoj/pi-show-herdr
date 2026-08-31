@@ -1,6 +1,6 @@
 {
   "name": "pi-show-herdr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Pi tool that presents files in Herdr",
   "license": "MIT",
   "repository": "github:spoj/pi-show-herdr",

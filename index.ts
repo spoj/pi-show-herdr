@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -41,9 +42,9 @@ metadata() {
 case "$mime" in
   text/*|application/json|application/xml|application/x-shellscript)
     if command -v bat >/dev/null 2>&1; then
-      bat --paging=always --style=plain --color=always -- "$file"
+      LESSOPEN='|bat --style=plain --color=always -- %s' less -R -- "$file"
     elif command -v batcat >/dev/null 2>&1; then
-      batcat --paging=always --style=plain --color=always -- "$file"
+      LESSOPEN='|batcat --style=plain --color=always -- %s' less -R -- "$file"
     else
       less -R -- "$file"
     fi
@@ -87,6 +88,13 @@ esac
 `;
 
 export default function (pi: ExtensionAPI) {
+  const watchers = new Set<AbortController>();
+
+  pi.on("session_shutdown", () => {
+    for (const watcher of watchers) watcher.abort();
+    watchers.clear();
+  });
+
   pi.registerTool({
     name: "show",
     label: "Show",
@@ -132,8 +140,41 @@ export default function (pi: ExtensionAPI) {
         await pi.exec(herdr, ["pane", "close", paneId], { timeout: 5000 });
         throw new Error("Herdr could not launch the viewer");
       }
+      const watcher = new AbortController();
+      watchers.add(watcher);
+      void (async () => {
+        try {
+          while (!watcher.signal.aborted) {
+            await delay(500, undefined, { signal: watcher.signal });
+            const pane = await pi.exec(herdr, ["pane", "get", paneId], {
+              signal: watcher.signal,
+              timeout: 5000,
+            });
+            if (pane.code !== 0) break;
+          }
+          if (watcher.signal.aborted) return;
+
+          const after = await stat(file);
+          if (after.dev === info.dev && after.ino === info.ino && after.size === info.size && after.mtimeMs === info.mtimeMs) {
+            return;
+          }
+          pi.sendMessage(
+            {
+              customType: "pi-show-herdr",
+              content: `The file changed while the user was viewing it: ${file}\nRe-read it before continuing.`,
+              display: true,
+            },
+            { deliverAs: "steer", triggerTurn: true },
+          );
+        } catch {
+          return;
+        } finally {
+          watchers.delete(watcher);
+        }
+      })();
+
       return {
-        content: [{ type: "text", text: `Showing ${file} in Herdr. The user can press q to return.` }],
+        content: [{ type: "text", text: `Showing ${file} in Herdr. The user can press v to edit text files and q to return.` }],
         details: { file, paneId } satisfies ShowDetails,
       };
     },
