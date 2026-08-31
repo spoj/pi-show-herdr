@@ -1,7 +1,7 @@
 {
-  "name": "pi-show",
+  "name": "pi-show-herdr",
   "version": "0.1.0",
-  "description": "A Pi tool that presents files to the user",
+  "description": "A Pi tool that presents files in Herdr",
   "keywords": [
     "pi-package"
   ],

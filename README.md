@@ -1,25 +1,40 @@
-# pi-show
+# pi-show-herdr
 
-A Pi extension with one tool:
+A Herdr-only Pi extension with one tool:
 
 ```text
 show(file)
 ```
 
-When Pi runs in Herdr, `show` opens the file in a new pane, focuses and zooms that pane, and starts a pager. Press `q` to close the viewer and return to the original layout.
+`show` opens the file in a focused, zoomed Herdr pane. It uses Yazi when available, giving images, PDFs, audio, video, archives, and text the preview behavior configured on the user's machine. Without Yazi it falls back to `bat`, `batcat`, or `less`.
 
-Outside Herdr, `show` temporarily suspends Pi's TUI and opens the pager in the current terminal. It uses `bat` when available and falls back to `less`.
+Press `q` to close the viewer and restore the original layout. The tool fails outside interactive Pi sessions running in Herdr.
 
-The tool fails in print, JSON, and RPC modes so agents and automations cannot mistake an undisplayed file for a successful presentation.
+## Image previews
+
+Herdr's Kitty graphics support is experimental and must be enabled when the outer terminal supports it:
+
+```toml
+[experimental]
+kitty_graphics = true
+```
+
+Reload the Herdr config, detach, and reattach before reopening Yazi. Yazi can fall back to character-art previews when `chafa` is installed.
+
+Check Yazi's selected image adapter with:
+
+```bash
+yazi --debug
+```
 
 ## Install
 
 ```bash
-pi install /absolute/path/to/pi-show
+pi install /absolute/path/to/pi-show-herdr
 ```
 
 For a one-off run:
 
 ```bash
-pi -e /absolute/path/to/pi-show
+pi -e /absolute/path/to/pi-show-herdr
 ```
