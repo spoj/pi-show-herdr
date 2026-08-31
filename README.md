@@ -6,9 +6,11 @@ A Pi extension with one tool:
 show(file)
 ```
 
-When Pi runs in Herdr, `show` opens the file in a new pane, focuses and zooms that pane, and starts `less`. Press `q` to close the viewer and return to the original layout.
+When Pi runs in Herdr, `show` opens the file in a new pane, focuses and zooms that pane, and starts a pager. Press `q` to close the viewer and return to the original layout.
 
-Outside Herdr, the tool falls back to reporting the file's absolute path.
+Outside Herdr, `show` temporarily suspends Pi's TUI and opens the pager in the current terminal. It uses `bat` when available and falls back to `less`.
+
+The tool fails in print, JSON, and RPC modes so agents and automations cannot mistake an undisplayed file for a successful presentation.
 
 ## Install
 
