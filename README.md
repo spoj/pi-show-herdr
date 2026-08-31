@@ -6,31 +6,16 @@ A Herdr-only Pi extension with one tool:
 show(file)
 ```
 
-`show` opens the file in a focused, zoomed Herdr pane and selects a viewer from the commands available on the user's machine:
+When `show(file)` starts, it creates an isolated snapshot and working copy under `/tmp`, then opens the working copy in a focused, zoomed Herdr pane with `less`:
 
-- text and code: `bat`, `batcat`, or `less`
-- images: `chafa` or `img2txt`
-- PDFs: first-page image via `pdftoppm`, or text via `pdftotext`
-- video: poster frame via `ffmpeg`
-- audio: metadata via `mediainfo` or `ffprobe`
-- other files: type information and a short hex dump
+1. The original file is copied to an `original-*` snapshot.
+2. The snapshot is copied to a `working-*` file for the user to view.
+3. In `less`, `v` opens the working copy in `$VISUAL` or `$EDITOR`; `show` never modifies the original file.
+4. When the user presses `q`, the extension creates a unified diff between the snapshot and the final working copy and sends it to the agent. This is a diff against the startup snapshot, not against any concurrent changes made to the original.
 
-Press `q` to close the viewer and restore the original layout. In text previews, press `v` to edit the original file with `$VISUAL` or `$EDITOR`. If the file changes before the viewer closes, the extension sends the agent an asynchronous steering message so it can re-read the file.
+If the diff is short, it is included in the message and also saved as `diff.patch`. If it is long, the message gives the agent paths to the retained original snapshot, final working copy, and complete diff. The agent can inspect and apply the changes or ask the user questions; `show` never applies them automatically. These temporary files are intentionally not cleaned up when the user is done.
 
-The tool fails outside interactive Pi sessions running in Herdr.
-
-The system must provide `file` and `less`. Other viewers are optional; preview quality improves as more are available, and `chafa` is recommended for images.
-
-## Image previews
-
-The default image path uses terminal character graphics, which works without graphics-protocol passthrough. Herdr also has experimental Kitty graphics support for tools that emit that protocol:
-
-```toml
-[experimental]
-kitty_graphics = true
-```
-
-After changing this setting, reload the Herdr config, detach, and reattach.
+If available, `bat` or `batcat` adds syntax highlighting through `less`; `cat` is the last-resort display fallback. The `bat` and `cat` fallbacks only display the file and do not provide editing. The tool fails outside interactive Pi sessions running in Herdr.
 
 ## Install
 

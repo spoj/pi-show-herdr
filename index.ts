@@ -1,5 +1,6 @@
-import { stat } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { copyFile, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -10,81 +11,27 @@ interface ShowDetails {
   paneId: string;
 }
 
-const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+const maxInlineDiffChars = 10_000;
 
 const viewer = `
 file=$1
-mime=$(file -Lb --mime-type -- "$file")
-cols=$(tput cols 2>/dev/null || printf 100)
-rows=$(tput lines 2>/dev/null || printf 40)
-rows=$((rows - 2))
 
-image() {
-  if command -v chafa >/dev/null 2>&1; then
-    chafa --animate off --format symbols --size "\${cols}x\${rows}" -- "$1"
-  elif command -v img2txt >/dev/null 2>&1; then
-    img2txt -f utf8 -W "$cols" -H "$rows" "$1"
+if command -v less >/dev/null 2>&1; then
+  if command -v bat >/dev/null 2>&1; then
+    LESSOPEN='|bat --style=plain --color=always -- %s' less -R -- "$file"
+  elif command -v batcat >/dev/null 2>&1; then
+    LESSOPEN='|batcat --style=plain --color=always -- %s' less -R -- "$file"
   else
-    return 1
+    less -R -- "$file"
   fi
-}
-
-metadata() {
-  if command -v mediainfo >/dev/null 2>&1; then
-    mediainfo -- "$file"
-  elif command -v ffprobe >/dev/null 2>&1; then
-    ffprobe -hide_banner -- "$file" 2>&1
-  else
-    file -Lb -- "$file"
-  fi
-}
-
-case "$mime" in
-  text/*|application/json|application/xml|application/x-shellscript)
-    if command -v bat >/dev/null 2>&1; then
-      LESSOPEN='|bat --style=plain --color=always -- %s' less -R -- "$file"
-    elif command -v batcat >/dev/null 2>&1; then
-      LESSOPEN='|batcat --style=plain --color=always -- %s' less -R -- "$file"
-    else
-      less -R -- "$file"
-    fi
-    ;;
-  image/*)
-    if command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; then
-      image "$file" | less -R
-    else
-      metadata | less -R
-    fi
-    ;;
-  application/pdf)
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT INT TERM
-    if pdftoppm -f 1 -singlefile -scale-to 1600 -png -- "$file" "$tmp/page" >/dev/null 2>&1 && \
-       { command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; }; then
-      image "$tmp/page.png" | less -R
-    elif command -v pdftotext >/dev/null 2>&1; then
-      pdftotext -- "$file" - | less -R
-    else
-      metadata | less -R
-    fi
-    ;;
-  video/*)
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT INT TERM
-    if ffmpeg -loglevel error -ss 1 -i "$file" -frames:v 1 "$tmp/frame.png" && \
-       { command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; }; then
-      image "$tmp/frame.png" | less -R
-    else
-      metadata | less -R
-    fi
-    ;;
-  audio/*)
-    metadata | less -R
-    ;;
-  *)
-    { file -Lb -- "$file"; printf '\n'; od -Ax -tx1z -N 4096 -- "$file"; } | less -R
-    ;;
-esac
+elif command -v bat >/dev/null 2>&1; then
+  bat --paging=never --style=plain --color=always -- "$file"
+elif command -v batcat >/dev/null 2>&1; then
+  batcat --paging=never --style=plain --color=always -- "$file"
+else
+  cat -- "$file"
+fi
 `;
 
 export default function (pi: ExtensionAPI) {
@@ -98,10 +45,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "show",
     label: "Show",
-    description: "Present an existing file to the user in a focused, zoomed Herdr viewer pane. Selects a text, image, PDF, video, audio, or binary preview from available command-line programs. Fails outside interactive Pi sessions running in Herdr.",
-    promptSnippet: "Present a file to the user",
+    description: "Present an existing file in a focused, zoomed Herdr pane for viewing or editing with less. Fails outside interactive Pi sessions running in Herdr.",
+    promptSnippet: "Present a file in Herdr for viewing or editing",
     promptGuidelines: [
-      "Use show when you want the user to look at a file; do not tell the user to open it manually.",
+      "Use show when you want the user to view or edit a file in Herdr; do not tell the user to open it manually.",
     ],
     parameters: Type.Object({
       file: Type.String({ description: "File to present, relative to the working directory or absolute" }),
@@ -118,10 +65,17 @@ export default function (pi: ExtensionAPI) {
       const info = await stat(file);
       if (!info.isFile()) throw new Error(`Not a file: ${file}`);
 
+      const tempDir = await mkdtemp(join(tmpdir(), "pi-show-"));
+      const originalCopy = join(tempDir, `original-${basename(file)}`);
+      const workingCopy = join(tempDir, `working-${basename(file)}`);
+      const diffFile = join(tempDir, "diff.patch");
+      await copyFile(file, originalCopy);
+      await copyFile(originalCopy, workingCopy);
+
       const herdr = process.env.HERDR_BIN_PATH || "herdr";
       const split = await pi.exec(
         herdr,
-        ["pane", "split", "--pane", pane, "--direction", "right", "--cwd", dirname(file), "--focus"],
+        ["pane", "split", "--pane", pane, "--direction", "right", "--cwd", dirname(workingCopy), "--focus"],
         { signal, timeout: 5000 },
       );
       if (split.code !== 0) throw new Error("Herdr could not create a viewer pane");
@@ -131,7 +85,7 @@ export default function (pi: ExtensionAPI) {
         signal,
         timeout: 5000,
       });
-      const command = `/bin/sh -c ${quote(viewer)} show ${quote(file)}; ${quote(herdr)} pane zoom --current --off; exit`;
+      const command = `/bin/sh -c ${quote(viewer)} show ${quote(workingCopy)}; ${quote(herdr)} pane zoom --current --off; exit`;
       const run = zoom.code === 0
         ? await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 })
         : zoom;
@@ -154,16 +108,34 @@ export default function (pi: ExtensionAPI) {
           }
           if (watcher.signal.aborted) return;
 
-          const after = await stat(file);
-          if (after.dev === info.dev && after.ino === info.ino && after.size === info.size && after.mtimeMs === info.mtimeMs) {
-            return;
+          const diff = await pi.exec(
+            "diff",
+            [
+              "-u",
+              "--label",
+              `original ${file}`,
+              "--label",
+              `edited copy ${file}`,
+              originalCopy,
+              workingCopy,
+            ],
+            { signal: watcher.signal, timeout: 30_000 },
+          );
+          await writeFile(diffFile, diff.stdout);
+
+          let content: string;
+          if (diff.code > 1) {
+            content = `The user finished reviewing ${file} in Herdr, but the diff could not be generated. The show tool did not modify the original file.\n\nOriginal snapshot: ${originalCopy}\nFinal edited copy: ${workingCopy}\nDiff output: ${diffFile}\n\n${diff.stderr.trim()}`;
+          } else if (diff.code === 0) {
+            content = `The user finished reviewing ${file} in Herdr. No edits were made, and the show tool did not modify the original file.\n\nOriginal snapshot: ${originalCopy}\nFinal edited copy: ${workingCopy}\nDiff: ${diffFile}`;
+          } else if (diff.stdout.length <= maxInlineDiffChars) {
+            content = `The user finished reviewing ${file} in Herdr. The show tool did not modify the original file; the user edited an isolated copy.\n\nOriginal snapshot: ${originalCopy}\nFinal edited copy: ${workingCopy}\nDiff: ${diffFile}\n\nUnified diff:\n${diff.stdout}\n\nThe agent may apply the changes or ask the user questions.`;
+          } else {
+            content = `The user finished reviewing ${file} in Herdr. The diff is too long to include inline. The show tool did not modify the original file. The isolated review files were retained for inspection.\n\nOriginal snapshot: ${originalCopy}\nFinal edited copy: ${workingCopy}\nUnified diff: ${diffFile}\n\nRead those three files to inspect the changes. The agent may apply the changes or ask the user questions.`;
           }
+
           pi.sendMessage(
-            {
-              customType: "pi-show-herdr",
-              content: `The file changed while the user was viewing it: ${file}\nRe-read it before continuing.`,
-              display: true,
-            },
+            { customType: "pi-show-herdr", content, display: true },
             { deliverAs: "steer", triggerTurn: true },
           );
         } catch {
@@ -174,7 +146,7 @@ export default function (pi: ExtensionAPI) {
       })();
 
       return {
-        content: [{ type: "text", text: `Showing ${file} in Herdr. The user can press v to edit text files and q to return.` }],
+        content: [{ type: "text", text: `Showing an isolated copy of ${file} in Herdr. The user can press v to edit the copy and q to return; the show tool will not modify the original.` }],
         details: { file, paneId } satisfies ShowDetails,
       };
     },
@@ -190,7 +162,7 @@ export default function (pi: ExtensionAPI) {
     renderResult(result, _options, theme) {
       const details = result.details as ShowDetails | undefined;
       if (!details) return new Text("", 0, 0);
-      return new Text(theme.fg("success", "Viewer opened — press q to return"), 0, 0);
+      return new Text(theme.fg("success", "Isolated copy opened — press q to return"), 0, 0);
     },
   });
 }
