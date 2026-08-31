@@ -1,0 +1,19 @@
+{
+  "name": "pi-show",
+  "version": "0.1.0",
+  "description": "A Pi tool that presents files to the user",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
