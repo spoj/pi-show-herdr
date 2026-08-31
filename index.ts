@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -30,6 +30,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       file: Type.String({ description: "File to present, relative to the working directory or absolute" }),
     }),
+    executionMode: "sequential",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (ctx.mode !== "tui") throw new Error(`show requires interactive TUI mode; current mode is ${ctx.mode}`);
@@ -69,20 +70,38 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _keybindings, done) => {
-        tui.stop();
-        process.stdout.write("\x1b[2J\x1b[H");
-        const result = spawnSync("/bin/sh", ["-c", pager(file)], {
-          env: process.env,
-          stdio: "inherit",
-        });
-        tui.start();
-        tui.requestRender(true);
-        done(result.status);
+      let failure: Error | undefined;
+      await ctx.ui.custom<void>((tui, _theme, _keybindings, done) => {
+        void (async () => {
+          tui.stop();
+          try {
+            process.stdout.write("\x1b[2J\x1b[H");
+            await new Promise<void>((resolve, reject) => {
+              const child = spawn("/bin/sh", ["-c", pager(file)], {
+                env: process.env,
+                stdio: "inherit",
+              });
+              const abort = () => child.kill("SIGTERM");
+              signal?.addEventListener("abort", abort, { once: true });
+              child.on("error", reject);
+              child.on("exit", (code, childSignal) => {
+                signal?.removeEventListener("abort", abort);
+                if (code === 0) resolve();
+                else reject(new Error(`Pager exited with ${code ?? childSignal ?? "unknown status"}`));
+              });
+            });
+          } catch (error) {
+            failure = error instanceof Error ? error : new Error(String(error));
+          } finally {
+            tui.start();
+            tui.requestRender(true);
+            done();
+          }
+        })();
         return { render: () => [], invalidate: () => {} };
       });
 
-      if (exitCode !== 0) throw new Error(`Pager exited with code ${exitCode ?? "unknown"}`);
+      if (failure) throw failure;
       return {
         content: [{ type: "text", text: `Showed ${file} in the terminal pager.` }],
         details: { file, backend: "terminal" } satisfies ShowDetails,
