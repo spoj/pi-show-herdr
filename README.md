@@ -6,7 +6,14 @@ A Herdr-only Pi extension with one tool:
 show(file)
 ```
 
-`show` opens the file in a focused, zoomed Herdr pane. It uses Yazi when available, giving images, PDFs, audio, video, archives, and text the preview behavior configured on the user's machine. Without Yazi it falls back to `bat`, `batcat`, or `less`.
+`show` opens the file in a focused, zoomed Herdr pane and chooses a preview from available command-line programs:
+
+- text: `bat`, `batcat`, or `less`
+- images: `chafa` or `img2txt`
+- PDFs: `pdftoppm` plus an image renderer, or `pdftotext`
+- video: `ffmpeg` poster frame, or metadata
+- audio: `mediainfo` or `ffprobe`
+- other files: type information and a short hex dump
 
 Press `q` to close the viewer and restore the original layout. The tool fails outside interactive Pi sessions running in Herdr.
 

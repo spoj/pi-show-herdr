@@ -11,17 +11,86 @@ interface ShowDetails {
 
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
-const viewer = (file: string) =>
-  `if command -v yazi >/dev/null 2>&1; then yazi ${quote(file)}; ` +
-  `elif command -v bat >/dev/null 2>&1; then bat --paging=always --style=plain --color=always -- ${quote(file)}; ` +
-  `elif command -v batcat >/dev/null 2>&1; then batcat --paging=always --style=plain --color=always -- ${quote(file)}; ` +
-  `else less -R -- ${quote(file)}; fi`;
+const viewer = `
+file=$1
+mime=$(file -Lb --mime-type -- "$file")
+cols=$(tput cols 2>/dev/null || printf 100)
+rows=$(tput lines 2>/dev/null || printf 40)
+rows=$((rows - 2))
+
+image() {
+  if command -v chafa >/dev/null 2>&1; then
+    chafa --animate off --format symbols --size "\${cols}x\${rows}" -- "$1"
+  elif command -v img2txt >/dev/null 2>&1; then
+    img2txt -f utf8 -W "$cols" -H "$rows" "$1"
+  else
+    return 1
+  fi
+}
+
+metadata() {
+  if command -v mediainfo >/dev/null 2>&1; then
+    mediainfo -- "$file"
+  elif command -v ffprobe >/dev/null 2>&1; then
+    ffprobe -hide_banner -- "$file" 2>&1
+  else
+    file -Lb -- "$file"
+  fi
+}
+
+case "$mime" in
+  text/*|application/json|application/xml|application/x-shellscript)
+    if command -v bat >/dev/null 2>&1; then
+      bat --paging=always --style=plain --color=always -- "$file"
+    elif command -v batcat >/dev/null 2>&1; then
+      batcat --paging=always --style=plain --color=always -- "$file"
+    else
+      less -R -- "$file"
+    fi
+    ;;
+  image/*)
+    if command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; then
+      image "$file" | less -R
+    else
+      metadata | less -R
+    fi
+    ;;
+  application/pdf)
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT INT TERM
+    if pdftoppm -f 1 -singlefile -scale-to 1600 -png -- "$file" "$tmp/page" >/dev/null 2>&1 && \
+       { command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; }; then
+      image "$tmp/page.png" | less -R
+    elif command -v pdftotext >/dev/null 2>&1; then
+      pdftotext -- "$file" - | less -R
+    else
+      metadata | less -R
+    fi
+    ;;
+  video/*)
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT INT TERM
+    if ffmpeg -loglevel error -ss 1 -i "$file" -frames:v 1 "$tmp/frame.png" && \
+       { command -v chafa >/dev/null 2>&1 || command -v img2txt >/dev/null 2>&1; }; then
+      image "$tmp/frame.png" | less -R
+    else
+      metadata | less -R
+    fi
+    ;;
+  audio/*)
+    metadata | less -R
+    ;;
+  *)
+    { file -Lb -- "$file"; printf '\n'; od -Ax -tx1z -N 4096 -- "$file"; } | less -R
+    ;;
+esac
+`;
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "show",
     label: "Show",
-    description: "Present an existing file to the user in a focused, zoomed Herdr viewer pane. Uses Yazi when available for text and multimedia previews. Fails outside interactive Pi sessions running in Herdr.",
+    description: "Present an existing file to the user in a focused, zoomed Herdr viewer pane. Selects a text, image, PDF, video, audio, or binary preview from available command-line programs. Fails outside interactive Pi sessions running in Herdr.",
     promptSnippet: "Present a file to the user",
     promptGuidelines: [
       "Use show when you want the user to look at a file; do not tell the user to open it manually.",
@@ -54,7 +123,7 @@ export default function (pi: ExtensionAPI) {
         signal,
         timeout: 5000,
       });
-      const command = `${viewer(file)}; ${quote(herdr)} pane zoom --current --off; exit`;
+      const command = `/bin/sh -c ${quote(viewer)} show ${quote(file)}; ${quote(herdr)} pane zoom --current --off; exit`;
       const run = zoom.code === 0
         ? await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 })
         : zoom;
