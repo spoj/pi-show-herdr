@@ -3,19 +3,19 @@
 A Herdr-only Pi extension with one tool:
 
 ```text
-review(file)
+review(cmd)
 ```
 
-`review(file)` lets the user inspect or edit an isolated copy of a file while the agent waits:
+`review(cmd)` runs a Bash script and lets the user inspect or edit its generated output while the agent waits:
 
-1. The extension creates an original snapshot and a working copy under `/tmp`.
-2. It opens the working copy with `less` in a focused, zoomed Herdr pane.
-3. In `less`, `v` opens the working copy in `$VISUAL` or `$EDITOR`.
-4. When the user presses `q`, the extension checks whether the working copy changed. The original file is never modified.
+1. The script's combined output is captured as `original` under a temporary review directory.
+2. The extension copies it to `reviewed`.
+3. It opens `reviewed` directly in `$VISUAL`, falling back to `$EDITOR`, in a focused and zoomed Herdr pane.
+4. When the editor exits, the extension compares the two files and returns the result to the agent.
 
-If nothing changed, the temporary files are removed immediately. If the user made changes, the extension returns paths to the original snapshot and reviewed copy and includes a convenience diff when it is small enough. The diff is not stored as a third artifact: the two copies remain canonical, and the agent can regenerate their diff directly whenever needed. The agent then reconciles the reviewed copy with any concurrent changes to the real file. The review files are removed when the agent settles. Session shutdown provides a second cleanup path; files left by an abrupt process termination remain subject to the operating system's normal `/tmp` cleanup.
+The original and reviewed outputs remain under `/tmp` whether or not the user changed anything, and the result always includes both paths. A unified diff is included when the files differ and truncated to 50 KiB or 2,000 lines when necessary; the result reports the exact number of bytes included. The agent can inspect the retained files or regenerate the complete diff. The extension does not clean these files up; they remain subject to the operating system's normal `/tmp` cleanup.
 
-`less` is required. If available, `bat` or `batcat` provides syntax highlighting through `less`. The tool fails outside interactive Pi sessions running in Herdr.
+The script's exit code is reported with the review result. `review` requires `$VISUAL` or `$EDITOR` and fails outside interactive Pi sessions running in Herdr.
 
 ## Install
 
