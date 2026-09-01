@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,7 +12,6 @@ interface ReviewDetails {
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-const maxInlineDiffChars = 10_000;
 
 const viewer = `
 file=$1
@@ -41,7 +40,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "review",
     label: "Review",
-    description: "Open an isolated copy of an existing file in a focused, zoomed Herdr pane and wait for the user to finish. Returns any edits as a unified diff without modifying the original. Requires less and an interactive Pi session running in Herdr.",
+    description: "Open an isolated copy of an existing file in a focused, zoomed Herdr pane and wait for the user to finish. If changed, returns paths to the original snapshot and reviewed copy without modifying the real file. Requires less and an interactive Pi session running in Herdr.",
     promptSnippet: "Let the user review or edit a file in Herdr",
     promptGuidelines: [
       "Use review when the user should personally inspect or edit a file; use read for the agent's own inspection.",
@@ -67,7 +66,6 @@ export default function (pi: ExtensionAPI) {
       const tempDir = await mkdtemp(join(tmpdir(), "pi-review-"));
       const originalCopy = join(tempDir, `original-${basename(file)}`);
       const workingCopy = join(tempDir, `working-${basename(file)}`);
-      const diffFile = join(tempDir, "diff.patch");
       let paneId: string | undefined;
       let retain = false;
 
@@ -101,13 +99,12 @@ export default function (pi: ExtensionAPI) {
         }
         paneId = undefined;
 
-        const diff = await pi.exec(
-          "diff",
-          ["-u", "--label", `original ${file}`, "--label", `edited copy ${file}`, originalCopy, workingCopy],
-          { signal, timeout: 30_000 },
-        );
+        const comparison = await pi.exec("cmp", ["-s", originalCopy, workingCopy], {
+          signal,
+          timeout: 30_000,
+        });
 
-        if (diff.code === 0) {
+        if (comparison.code === 0) {
           return {
             content: [{ type: "text", text: `The user finished reviewing ${file}. No changes were made.` }],
             details: { file, outcome: "unchanged" } satisfies ReviewDetails,
@@ -116,15 +113,14 @@ export default function (pi: ExtensionAPI) {
 
         retain = true;
         pendingCleanup.add(tempDir);
+        const files = `Original snapshot: ${originalCopy}\nReviewed copy: ${workingCopy}`;
 
-        if (diff.code === 1) {
-          await writeFile(diffFile, diff.stdout);
-          const files = `Original snapshot: ${originalCopy}\nEdited copy: ${workingCopy}\nUnified diff: ${diffFile}`;
-          const text = diff.stdout.length <= maxInlineDiffChars
-            ? `The user edited an isolated copy of ${file}; the original was not modified. Apply this diff against the current file, accounting for any concurrent changes. The review files remain available during this agent run and will be removed when the agent settles:\n\n${files}\n\n${diff.stdout}`
-            : `The user edited an isolated copy of ${file}, but the diff is too large to include inline. The original was not modified. Inspect or apply these files during this agent run; they will be removed when the agent settles:\n\n${files}`;
+        if (comparison.code === 1) {
           return {
-            content: [{ type: "text", text }],
+            content: [{
+              type: "text",
+              text: `The user changed an isolated copy of ${file}; the real file was not modified. Compare the two review files yourself, then reconcile the reviewed copy with the current real file. The review files will be removed when the agent settles:\n\n${files}`,
+            }],
             details: { file, outcome: "changed" } satisfies ReviewDetails,
           };
         }
@@ -132,7 +128,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{
             type: "text",
-            text: `The user finished reviewing ${file}, but the diff could not be generated. The original was not modified. Inspect these files during this agent run; they will be removed when the agent settles:\n\nOriginal snapshot: ${originalCopy}\nEdited copy: ${workingCopy}\n\n${diff.stderr.trim()}`,
+            text: `The user finished reviewing ${file}, but the copies could not be compared. The real file was not modified. Inspect the review files yourself; they will be removed when the agent settles:\n\n${files}\n\n${comparison.stderr.trim()}`,
           }],
           details: { file, outcome: "unavailable" } satisfies ReviewDetails,
         };
@@ -162,7 +158,7 @@ export default function (pi: ExtensionAPI) {
         ? "Review complete — no changes"
         : details.outcome === "changed"
           ? "Review complete — changes returned"
-          : "Review complete — diff unavailable";
+          : "Review complete — comparison unavailable";
       return new Text(theme.fg(details.outcome === "unavailable" ? "warning" : "success", text), 0, 0);
     },
   });
