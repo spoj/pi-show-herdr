@@ -24,7 +24,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "review",
     label: "Review",
-    description: "Run a Bash script, open an editable copy of its output in a focused, zoomed Herdr pane, and wait for the user to finish. Returns the original and reviewed output plus a unified diff. Requires VISUAL or EDITOR and an interactive Pi session running in Herdr.",
+    description: "Run a Bash script, open an editable copy of its output in a focused Herdr tab, and wait for the user to finish. Returns the original and reviewed output plus a unified diff. Requires VISUAL or EDITOR and an interactive Pi session running in Herdr.",
     promptSnippet: "Let the user review or edit generated command output in Herdr",
     promptGuidelines: [
       "Use review when the user should personally inspect or edit generated output.",
@@ -36,14 +36,14 @@ export default function (pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (ctx.mode !== "tui") throw new Error(`review requires interactive TUI mode; current mode is ${ctx.mode}`);
-      const parentPane = process.env.HERDR_PANE_ID;
-      if (process.env.HERDR_ENV !== "1" || !parentPane) throw new Error("review requires Herdr");
+      const workspace = process.env.HERDR_WORKSPACE_ID;
+      if (process.env.HERDR_ENV !== "1" || !workspace) throw new Error("review requires Herdr");
       if (!process.env.VISUAL && !process.env.EDITOR) throw new Error("review requires VISUAL or EDITOR");
 
       const tempDir = await mkdtemp(join(tmpdir(), "pi-review-"));
       const originalCopy = join(tempDir, "original");
       const reviewedCopy = join(tempDir, "reviewed");
-      let paneId: string | undefined;
+      let tabId: string | undefined;
 
       try {
         const capture = await pi.exec(
@@ -54,30 +54,28 @@ export default function (pi: ExtensionAPI) {
         await copyFile(originalCopy, reviewedCopy);
 
         const herdr = process.env.HERDR_BIN_PATH || "herdr";
-        const split = await pi.exec(
+        const created = await pi.exec(
           herdr,
-          ["pane", "split", "--pane", parentPane, "--direction", "right", "--cwd", tempDir, "--focus"],
+          ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--focus"],
           { signal, timeout: 5000 },
         );
-        if (split.code !== 0) throw new Error("Herdr could not create a review pane");
+        if (created.code !== 0) throw new Error("Herdr could not create a review tab");
 
-        paneId = (JSON.parse(split.stdout) as { result: { pane: { pane_id: string } } }).result.pane.pane_id;
-        const zoom = await pi.exec(herdr, ["pane", "zoom", "--pane", paneId, "--on"], {
-          signal,
-          timeout: 5000,
-        });
-        const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)}; ${quote(herdr)} pane zoom --current --off; exit`;
-        const run = zoom.code === 0
-          ? await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 })
-          : zoom;
+        const result = JSON.parse(created.stdout) as {
+          result: { tab: { tab_id: string }; root_pane: { pane_id: string } };
+        };
+        tabId = result.result.tab.tab_id;
+        const paneId = result.result.root_pane.pane_id;
+        const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)}; exit`;
+        const run = await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 });
         if (run.code !== 0) throw new Error("Herdr could not launch the editor");
 
         while (true) {
           await delay(500, undefined, { signal });
-          const pane = await pi.exec(herdr, ["pane", "get", paneId], { signal, timeout: 5000 });
-          if (pane.code !== 0) break;
+          const tab = await pi.exec(herdr, ["tab", "get", tabId], { signal, timeout: 5000 });
+          if (tab.code !== 0) break;
         }
-        paneId = undefined;
+        tabId = undefined;
 
         const diff = await pi.exec(
           "diff",
@@ -131,9 +129,9 @@ export default function (pi: ExtensionAPI) {
           } satisfies ReviewDetails,
         };
       } catch (error) {
-        if (paneId) {
+        if (tabId) {
           const herdr = process.env.HERDR_BIN_PATH || "herdr";
-          await pi.exec(herdr, ["pane", "close", paneId], { timeout: 5000 });
+          await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
         }
         throw error;
       }
