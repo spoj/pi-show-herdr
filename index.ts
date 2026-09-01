@@ -12,6 +12,7 @@ interface ReviewDetails {
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+const maxInlineDiffChars = 10_000;
 
 const viewer = `
 file=$1
@@ -99,12 +100,13 @@ export default function (pi: ExtensionAPI) {
         }
         paneId = undefined;
 
-        const comparison = await pi.exec("cmp", ["-s", originalCopy, workingCopy], {
-          signal,
-          timeout: 30_000,
-        });
+        const diff = await pi.exec(
+          "diff",
+          ["-u", "--label", `original ${file}`, "--label", `reviewed ${file}`, originalCopy, workingCopy],
+          { signal, timeout: 30_000 },
+        );
 
-        if (comparison.code === 0) {
+        if (diff.code === 0) {
           return {
             content: [{ type: "text", text: `The user finished reviewing ${file}. No changes were made.` }],
             details: { file, outcome: "unchanged" } satisfies ReviewDetails,
@@ -115,11 +117,14 @@ export default function (pi: ExtensionAPI) {
         pendingCleanup.add(tempDir);
         const files = `Original snapshot: ${originalCopy}\nReviewed copy: ${workingCopy}`;
 
-        if (comparison.code === 1) {
+        if (diff.code === 1) {
+          const inlineDiff = diff.stdout.length <= maxInlineDiffChars
+            ? `\n\nConvenience diff (regenerate it from the copies if needed):\n\n${diff.stdout}`
+            : "\n\nThe diff is too large to include inline; generate it from the two copies.";
           return {
             content: [{
               type: "text",
-              text: `The user changed an isolated copy of ${file}; the real file was not modified. Compare the two review files yourself, then reconcile the reviewed copy with the current real file. The review files will be removed when the agent settles:\n\n${files}`,
+              text: `The user changed an isolated copy of ${file}; the real file was not modified. Reconcile the reviewed copy with the current real file. The review files will be removed when the agent settles:\n\n${files}${inlineDiff}`,
             }],
             details: { file, outcome: "changed" } satisfies ReviewDetails,
           };
@@ -128,7 +133,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{
             type: "text",
-            text: `The user finished reviewing ${file}, but the copies could not be compared. The real file was not modified. Inspect the review files yourself; they will be removed when the agent settles:\n\n${files}\n\n${comparison.stderr.trim()}`,
+            text: `The user finished reviewing ${file}, but the diff could not be generated. The real file was not modified. Inspect the review files yourself; they will be removed when the agent settles:\n\n${files}\n\n${diff.stderr.trim()}`,
           }],
           details: { file, outcome: "unavailable" } satisfies ReviewDetails,
         };

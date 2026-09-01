@@ -13,7 +13,7 @@ review(file)
 3. In `less`, `v` opens the working copy in `$VISUAL` or `$EDITOR`.
 4. When the user presses `q`, the extension checks whether the working copy changed. The original file is never modified.
 
-If nothing changed, the temporary files are removed immediately. If the user made changes, the extension returns paths to the original snapshot and reviewed copy. It deliberately does not generate a diff: the agent compares the two files itself, then reconciles the reviewed copy with any concurrent changes to the real file. The review files are removed when the agent settles. Session shutdown provides a second cleanup path; files left by an abrupt process termination remain subject to the operating system's normal `/tmp` cleanup.
+If nothing changed, the temporary files are removed immediately. If the user made changes, the extension returns paths to the original snapshot and reviewed copy and includes a convenience diff when it is small enough. The diff is not stored as a third artifact: the two copies remain canonical, and the agent can regenerate their diff directly whenever needed. The agent then reconciles the reviewed copy with any concurrent changes to the real file. The review files are removed when the agent settles. Session shutdown provides a second cleanup path; files left by an abrupt process termination remain subject to the operating system's normal `/tmp` cleanup.
 
 `less` is required. If available, `bat` or `batcat` provides syntax highlighting through `less`. The tool fails outside interactive Pi sessions running in Herdr.
 
