@@ -3,19 +3,21 @@
 A Herdr-only Pi extension with one tool:
 
 ```text
-show(file)
+review(file)
 ```
 
-When `show(file)` starts, it creates an isolated snapshot and working copy under `/tmp`, then opens the working copy in a focused, zoomed Herdr pane with `less`:
+`review(file)` lets the user inspect or edit an isolated copy of a file while the agent waits:
 
-1. The original file is copied to an `original-*` snapshot.
-2. The snapshot is copied to a `working-*` file for the user to view.
-3. In `less`, `v` opens the working copy in `$VISUAL` or `$EDITOR`; `show` never modifies the original file.
-4. When the user presses `q`, the extension creates a unified diff between the snapshot and the final working copy and sends it to the agent. This is a diff against the startup snapshot, not against any concurrent changes made to the original.
+1. The extension creates an original snapshot and a working copy under `/tmp`.
+2. It opens the working copy with `less` in a focused, zoomed Herdr pane.
+3. In `less`, `v` opens the working copy in `$VISUAL` or `$EDITOR`.
+4. When the user presses `q`, the extension compares the working copy with the snapshot and returns the result to the agent. The original file is never modified.
 
-If the diff is short, it is included in the message and also saved as `diff.patch`. If it is long, the message gives the agent paths to the retained original snapshot, final working copy, and complete diff. The agent can inspect and apply the changes or ask the user questions; `show` never applies them automatically. These temporary files are intentionally not cleaned up when the user is done.
+If nothing changed, the temporary files are removed immediately. If the user made changes, the original snapshot and edited copy remain available while the agent reconciles them with any concurrent changes to the real file. A short diff is also returned inline; a large diff is available by path. Changed review files are removed when the agent settles. Session shutdown provides a second cleanup path; files left by an abrupt process termination remain subject to the operating system's normal `/tmp` cleanup.
 
-If available, `bat` or `batcat` adds syntax highlighting through `less`; `cat` is the last-resort display fallback. The `bat` and `cat` fallbacks only display the file and do not provide editing. The tool fails outside interactive Pi sessions running in Herdr.
+The diff is against the startup snapshot, not against concurrent changes to the original. The agent must apply it against the current file accordingly.
+
+`less` is required. If available, `bat` or `batcat` provides syntax highlighting through `less`. The tool fails outside interactive Pi sessions running in Herdr.
 
 ## Install
 
