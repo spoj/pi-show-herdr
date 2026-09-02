@@ -70,7 +70,7 @@ ${params.cmd}
         const herdr = process.env.HERDR_BIN_PATH || "herdr";
         const created = await pi.exec(
           herdr,
-          ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--env", `VISUAL=${editorCommand}`, "--focus"],
+          ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--env", `VISUAL=${editorCommand}`, ...(process.env.PATH ? ["--env", `PATH=${process.env.PATH}`] : []), "--focus"],
           { signal, timeout: 5000 },
         );
         if (created.killed || created.code !== 0) throw new Error("Herdr could not create a review tab");
