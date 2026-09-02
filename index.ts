@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,8 +16,12 @@ const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 
 const editor = `
 file=$1
+statusFile=$2
 editor=\${VISUAL:-$EDITOR}
-exec $editor -- "$file"
+$editor -- "$file"
+status=$?
+printf '%s\\n' "$status" > "$statusFile"
+exit "$status"
 `;
 
 export default function (pi: ExtensionAPI) {
@@ -43,6 +47,7 @@ export default function (pi: ExtensionAPI) {
       const tempDir = await mkdtemp(join(tmpdir(), "pi-review-"));
       const originalCopy = join(tempDir, "original");
       const reviewedCopy = join(tempDir, "reviewed");
+      const editorStatusFile = join(tempDir, "editor-status");
       let tabId: string | undefined;
 
       try {
@@ -66,16 +71,36 @@ export default function (pi: ExtensionAPI) {
         };
         tabId = result.result.tab.tab_id;
         const paneId = result.result.root_pane.pane_id;
-        const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)}; exit`;
+        const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)} ${quote(editorStatusFile)}; exit`;
         const run = await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 });
         if (run.code !== 0) throw new Error("Herdr could not launch the editor");
 
         while (true) {
           await delay(500, undefined, { signal });
           const tab = await pi.exec(herdr, ["tab", "get", tabId], { signal, timeout: 5000 });
-          if (tab.code !== 0) break;
+          if (tab.code === 0) continue;
+
+          let errorCode: string | undefined;
+          try {
+            errorCode = (JSON.parse(tab.stderr) as { error?: { code?: string } }).error?.code;
+          } catch {}
+          if (errorCode !== "tab_not_found") {
+            throw new Error(`Herdr could not read the review tab: ${tab.stderr.trim() || tab.stdout.trim()}`);
+          }
+          break;
         }
         tabId = undefined;
+
+        let editorStatus: string;
+        try {
+          editorStatus = await readFile(editorStatusFile, "utf8");
+        } catch {
+          throw new Error("Review editor did not complete");
+        }
+        const editorCode = Number.parseInt(editorStatus.trim(), 10);
+        if (!Number.isInteger(editorCode) || editorCode !== 0) {
+          throw new Error(`Review editor exited with code ${editorCode}`);
+        }
 
         const diff = await pi.exec(
           "diff",
