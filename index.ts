@@ -18,7 +18,7 @@ const editor = `
 file=$1
 statusFile=$2
 editor=\${VISUAL:-$EDITOR}
-$editor -- "$file"
+eval "$editor" '"$file"'
 status=$?
 printf '%s\\n' "$status" > "$statusFile"
 exit "$status"
