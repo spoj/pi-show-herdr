@@ -56,6 +56,7 @@ export default function (pi: ExtensionAPI) {
           ["-c", `( ${params.cmd}\n) > ${quote(originalCopy)} 2>&1`],
           { signal, cwd: ctx.cwd },
         );
+        if (capture.killed) throw new Error("Review command was killed");
         await copyFile(originalCopy, reviewedCopy);
 
         const herdr = process.env.HERDR_BIN_PATH || "herdr";
@@ -64,7 +65,7 @@ export default function (pi: ExtensionAPI) {
           ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--focus"],
           { signal, timeout: 5000 },
         );
-        if (created.code !== 0) throw new Error("Herdr could not create a review tab");
+        if (created.killed || created.code !== 0) throw new Error("Herdr could not create a review tab");
 
         const result = JSON.parse(created.stdout) as {
           result: { tab: { tab_id: string }; root_pane: { pane_id: string } };
@@ -73,11 +74,12 @@ export default function (pi: ExtensionAPI) {
         const paneId = result.result.root_pane.pane_id;
         const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)} ${quote(editorStatusFile)}; exit`;
         const run = await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 });
-        if (run.code !== 0) throw new Error("Herdr could not launch the editor");
+        if (run.killed || run.code !== 0) throw new Error("Herdr could not launch the editor");
 
         while (true) {
           await delay(500, undefined, { signal });
           const tab = await pi.exec(herdr, ["tab", "get", tabId], { signal, timeout: 5000 });
+          if (tab.killed) throw new Error("Herdr could not read the review tab");
           if (tab.code === 0) continue;
 
           let errorCode: string | undefined;
@@ -107,6 +109,7 @@ export default function (pi: ExtensionAPI) {
           ["-u", "--label", "original output", "--label", "reviewed output", originalCopy, reviewedCopy],
           { signal, timeout: 30_000 },
         );
+        if (diff.killed) throw new Error("Could not generate the review diff");
 
         if (diff.code === 0) {
           return {
