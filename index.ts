@@ -55,9 +55,11 @@ export default function (pi: ExtensionAPI) {
       try {
         const captureScript = `
 exec > ${quote(originalCopy)} 2>&1
-trap 'trap - TERM INT HUP; kill -- -$$' TERM INT HUP
+trap 'trap "" TERM INT HUP; kill -TERM -- -$$; sleep 1; kill -KILL -- -$$' TERM INT HUP
 trap 'status=$?; trap - EXIT; set +e; wait; exit "$status"' EXIT
-${params.cmd}
+(${params.cmd}) & commandPid=$!
+while kill -0 "$commandPid" 2>/dev/null; do sleep 0.1; done
+wait "$commandPid"
 `;
         const capture = await pi.exec(
           "setsid",
