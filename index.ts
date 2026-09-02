@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const capture = await pi.exec(
           "bash",
-          ["-c", `( ${params.cmd}\n) > ${quote(originalCopy)} 2>&1`],
+          ["-c", `( ${params.cmd}\nstatus=$?\nwait\nexit "$status"\n) > ${quote(originalCopy)} 2>&1`],
           { signal, cwd: ctx.cwd },
         );
         if (capture.killed) throw new Error("Review command was killed");
