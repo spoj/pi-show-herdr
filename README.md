@@ -15,7 +15,7 @@ review(cmd)
 
 The original and reviewed outputs remain under `/tmp` whether or not the user changed anything, and the result always includes both paths. A unified diff is included when the files differ and truncated to 50 KiB or 2,000 lines when necessary; the result reports the exact number of bytes included. The agent can inspect the retained files or regenerate the complete diff. The extension does not clean these files up; they remain subject to the operating system's normal `/tmp` cleanup.
 
-The script's exit code is reported with the review result. `review` requires `$VISUAL` or `$EDITOR` and fails outside interactive Pi sessions running in Herdr.
+The script's exit code is reported with the review result. `$VISUAL` or `$EDITOR` must be a blocking editor command that does not return until the user finishes (for example, `code --wait`). `review` requires `$VISUAL` or `$EDITOR` and fails outside interactive Pi sessions running in Herdr.
 
 ## Install
 

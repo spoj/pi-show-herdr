@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -28,7 +28,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "review",
     label: "Review",
-    description: "Run a Bash script, open an editable copy of its output in a focused Herdr tab, and wait for the user to finish. Returns the original and reviewed output plus a unified diff. Requires VISUAL or EDITOR and an interactive Pi session running in Herdr.",
+    description: "Run a Bash script, open an editable copy of its output in a focused Herdr tab, and wait for the user to finish. Returns the original and reviewed output plus a unified diff. Requires a blocking VISUAL or EDITOR command and an interactive Pi session running in Herdr.",
     promptSnippet: "Let the user review or edit generated command output in Herdr",
     promptGuidelines: [
       "Use review when the user should personally inspect or edit generated output.",
@@ -42,18 +42,26 @@ export default function (pi: ExtensionAPI) {
       if (ctx.mode !== "tui") throw new Error(`review requires interactive TUI mode; current mode is ${ctx.mode}`);
       const workspace = process.env.HERDR_WORKSPACE_ID;
       if (process.env.HERDR_ENV !== "1" || !workspace) throw new Error("review requires Herdr");
-      if (!process.env.VISUAL && !process.env.EDITOR) throw new Error("review requires VISUAL or EDITOR");
+      const editorCommand = process.env.VISUAL || process.env.EDITOR;
+      if (!editorCommand) throw new Error("review requires VISUAL or EDITOR");
 
       const tempDir = await mkdtemp(join(tmpdir(), "pi-review-"));
       const originalCopy = join(tempDir, "original");
       const reviewedCopy = join(tempDir, "reviewed");
       const editorStatusFile = join(tempDir, "editor-status");
       let tabId: string | undefined;
+      let retain = false;
 
       try {
+        const captureScript = `
+exec > ${quote(originalCopy)} 2>&1
+trap 'trap - TERM INT HUP; kill -- -$$' TERM INT HUP
+trap 'status=$?; trap - EXIT; set +e; wait; exit "$status"' EXIT
+${params.cmd}
+`;
         const capture = await pi.exec(
-          "bash",
-          ["-c", `( ${params.cmd}\nstatus=$?\nwait\nexit "$status"\n) > ${quote(originalCopy)} 2>&1`],
+          "setsid",
+          ["bash", "-c", captureScript],
           { signal, cwd: ctx.cwd },
         );
         if (capture.killed) throw new Error("Review command was killed");
@@ -62,7 +70,7 @@ export default function (pi: ExtensionAPI) {
         const herdr = process.env.HERDR_BIN_PATH || "herdr";
         const created = await pi.exec(
           herdr,
-          ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--focus"],
+          ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--env", `VISUAL=${editorCommand}`, "--focus"],
           { signal, timeout: 5000 },
         );
         if (created.killed || created.code !== 0) throw new Error("Herdr could not create a review tab");
@@ -112,6 +120,7 @@ export default function (pi: ExtensionAPI) {
         if (diff.killed) throw new Error("Could not generate the review diff");
 
         if (diff.code === 0) {
+          retain = true;
           return {
             content: [{
               type: "text",
@@ -128,6 +137,7 @@ export default function (pi: ExtensionAPI) {
         const files = `Original: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`;
 
         if (diff.code === 1) {
+          retain = true;
           const truncation = truncateHead(diff.stdout);
           const notice = truncation.truncated
             ? `\n\n[Diff too long and truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
@@ -145,6 +155,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
 
+        retain = true;
         return {
           content: [{
             type: "text",
@@ -162,6 +173,8 @@ export default function (pi: ExtensionAPI) {
           await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
         }
         throw error;
+      } finally {
+        if (!retain) await rm(tempDir, { recursive: true, force: true });
       }
     },
 
