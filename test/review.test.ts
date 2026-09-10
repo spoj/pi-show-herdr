@@ -6,6 +6,7 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 const STUBS: Record<string, string> = {
   "@earendil-works/pi-coding-agent": `
@@ -207,19 +208,19 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
   delete process.env.FAKE_HERDR_TAB_GET_ERROR;
   if (options.tabGetError) process.env.FAKE_HERDR_TAB_GET_ERROR = options.tabGetError;
 
-  let tool: { execute: Harness["execute"] };
+  let tool: ToolDefinition;
   const exec = makeExec(options.missing ?? []);
   extension({
     exec: async (...args: Parameters<Exec>) => {
       const result = await exec(...args);
       return options.diffKilled && args[0] === "bash" ? { ...result, killed: true } : result;
     },
-    registerTool: (registered: { execute: Harness["execute"] }) => {
+    registerTool: (registered: ToolDefinition) => {
       tool = registered;
     },
-  });
+  } as ExtensionAPI);
 
-  const ctx = { mode: "tui", cwd: root, hasUI: false };
+  const ctx = { mode: "tui", cwd: root, hasUI: false } as ExtensionContext;
   const killPane = () => {
     const pidFile = join(stateDir, "pane.pid");
     if (!existsSync(pidFile)) return;
@@ -239,7 +240,7 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
     setEditorMode(mode) {
       process.env.FAKE_EDITOR_MODE = mode;
     },
-    execute: (cmd, signal) => tool.execute("tool-call", { cmd }, signal, undefined, ctx),
+    execute: (cmd, signal) => tool.execute("tool-call", { cmd }, signal, undefined, ctx) as ReturnType<Harness["execute"]>,
     async cleanup() {
       killPane();
       for (const [key, value] of previous) {
