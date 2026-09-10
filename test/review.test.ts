@@ -173,6 +173,7 @@ const ENV_KEYS = [
   "FAKE_EDITOR_MODE",
   "VISUAL",
   "PATH",
+  "TMPDIR",
 ] as const;
 
 interface Harness {
@@ -183,7 +184,7 @@ interface Harness {
   cleanup(): Promise<void>;
 }
 
-async function createHarness(options: { missing?: string[]; tabGetError?: string } = {}): Promise<Harness> {
+async function createHarness(options: { missing?: string[]; tabGetError?: string; diffKilled?: boolean } = {}): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), "pi-show-test-"));
   const stateDir = join(root, "state");
   await mkdir(stateDir);
@@ -200,14 +201,19 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
   process.env.HERDR_WORKSPACE_ID = "test-workspace";
   process.env.HERDR_BIN_PATH = herdrPath;
   process.env.FAKE_HERDR_STATE = stateDir;
+  process.env.TMPDIR = root;
   process.env.FAKE_EDITOR_MODE = "noop";
   process.env.VISUAL = editorPath;
   delete process.env.FAKE_HERDR_TAB_GET_ERROR;
   if (options.tabGetError) process.env.FAKE_HERDR_TAB_GET_ERROR = options.tabGetError;
 
   let tool: { execute: Harness["execute"] };
+  const exec = makeExec(options.missing ?? []);
   extension({
-    exec: makeExec(options.missing ?? []),
+    exec: async (...args: Parameters<Exec>) => {
+      const result = await exec(...args);
+      return options.diffKilled && args[0] === "bash" ? { ...result, killed: true } : result;
+    },
     registerTool: (registered: { execute: Harness["execute"] }) => {
       tool = registered;
     },
@@ -414,6 +420,18 @@ test("a diff that exits 1 with no output is unavailable, not a change", async ()
     process.env.PATH = `${binDir}:${process.env.PATH}`;
     const result = await h.execute("printf 'hello\\n'");
     assert.equal(result.details.outcome, "unavailable");
+    assertKept(result.content[0].text);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a timed-out diff is unavailable even if it wrote a success status", async () => {
+  const h = await createHarness({ diffKilled: true });
+  try {
+    const result = await h.execute("echo hi");
+    assert.equal(result.details.outcome, "unavailable");
+    assert.match(result.content[0].text, /The diff timed out/);
     assertKept(result.content[0].text);
   } finally {
     await h.cleanup();
