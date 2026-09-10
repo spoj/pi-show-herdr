@@ -9,6 +9,9 @@
     "pi-package"
   ],
   "type": "module",
+  "scripts": {
+    "test": "node --test test/review.test.ts"
+  },
   "pi": {
     "extensions": [
       "./index.ts"
