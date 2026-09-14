@@ -60,9 +60,10 @@ export default function (pi: ExtensionAPI) {
       const editorStatusFile = join(tempDir, "editor-status");
       const captureStatusFile = join(tempDir, "capture-status");
       const diffStatusFile = join(tempDir, "diff-status");
+      const files = `Original: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`;
+      const herdr = process.env.HERDR_BIN_PATH || "herdr";
       let tabId: string | undefined;
-      let editable = false;
-      let retain = false;
+      let editorLaunched = false;
 
       try {
         const captureScript = `
@@ -89,7 +90,6 @@ wait "$commandPid"
         }
         await copyFile(originalCopy, reviewedCopy);
 
-        const herdr = process.env.HERDR_BIN_PATH || "herdr";
         const created = await pi.exec(
           herdr,
           ["tab", "create", "--workspace", workspace, "--cwd", tempDir, "--label", "Review", "--env", `VISUAL=${editorCommand}`, ...(process.env.PATH ? ["--env", `PATH=${process.env.PATH}`] : []), "--focus"],
@@ -105,7 +105,7 @@ wait "$commandPid"
         const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)} ${quote(editorStatusFile)}; exit`;
         const run = await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 });
         if (run.killed || run.code !== 0) throw new Error("Herdr could not launch the editor");
-        editable = true;
+        editorLaunched = true;
 
         while (true) {
           await delay(500, undefined, { signal });
@@ -133,74 +133,42 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
         const diff = await pi.exec("bash", ["-c", diffScript], { signal, timeout: 30_000 });
         const diffCode = await readStatus(diffStatusFile);
 
-        const files = `Original: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`;
-
+        let outcome: ReviewDetails["outcome"];
+        let text: string;
         if (!diff.killed && diffCode === 0) {
-          retain = true;
-          return {
-            content: [{
-              type: "text",
-              text: `The user finished reviewing the command output. No changes were made. The command exited with code ${captureCode}.\n\n${files}`,
-            }],
-            details: {
-              command: params.cmd,
-              exitCode: captureCode,
-              outcome: "unchanged",
-            } satisfies ReviewDetails,
-          };
-        }
-
-        if (!diff.killed && diffCode === 1 && diff.stdout.length > 0) {
-          retain = true;
+          outcome = "unchanged";
+          text = `The user finished reviewing the command output. No changes were made. The command exited with code ${captureCode}.\n\n${files}`;
+        } else if (!diff.killed && diffCode === 1 && diff.stdout.length > 0) {
+          outcome = "changed";
           const truncation = truncateHead(diff.stdout);
           const notice = truncation.truncated
             ? `\n\n[Diff too long and truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
             : "";
-          return {
-            content: [{
-              type: "text",
-              text: `The user changed the generated output. The command exited with code ${captureCode}.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`,
-            }],
-            details: {
-              command: params.cmd,
-              exitCode: captureCode,
-              outcome: "changed",
-            } satisfies ReviewDetails,
-          };
+          text = `The user changed the generated output. The command exited with code ${captureCode}.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`;
+        } else {
+          outcome = "unavailable";
+          const diffDetail = diff.stderr.trim()
+            || (diff.killed
+              ? "The diff timed out."
+              : diffCode === undefined
+                ? "The diff did not complete."
+                : `The diff exited with code ${diffCode}.`);
+          text = `The user finished reviewing the generated output, but the diff could not be generated. Inspect the review files directly. The command exited with code ${captureCode}.\n\n${files}\n\n${diffDetail}`;
         }
-
-        retain = true;
-        const diffDetail = diff.stderr.trim()
-          || (diff.killed
-            ? "The diff timed out."
-            : diffCode === undefined
-              ? "The diff did not complete."
-              : `The diff exited with code ${diffCode}.`);
         return {
-          content: [{
-            type: "text",
-            text: `The user finished reviewing the generated output, but the diff could not be generated. Inspect the review files directly. The command exited with code ${captureCode}.\n\n${files}\n\n${diffDetail}`,
-          }],
-          details: {
-            command: params.cmd,
-            exitCode: captureCode,
-            outcome: "unavailable",
-          } satisfies ReviewDetails,
+          content: [{ type: "text", text }],
+          details: { command: params.cmd, exitCode: captureCode, outcome } satisfies ReviewDetails,
         };
       } catch (error) {
-        if (editable) {
-          retain = true;
+        if (editorLaunched) {
           const message = error instanceof Error ? error.message : String(error);
           const tabNote = tabId ? `\nThe review tab (${tabId}) is still open.` : "";
-          throw new Error(`${message}\n\nThe review files were kept:${tabNote}\nOriginal: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`);
+          throw new Error(`${message}\n\nThe review files were kept:${tabNote}\n${files}`);
         }
-        if (tabId) {
-          const herdr = process.env.HERDR_BIN_PATH || "herdr";
-          await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
-        }
+        if (tabId) await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
         throw error;
       } finally {
-        if (!retain) await rm(tempDir, { recursive: true, force: true });
+        if (!editorLaunched) await rm(tempDir, { recursive: true, force: true });
       }
     },
 
