@@ -1,7 +1,7 @@
 {
   "name": "pi-show-herdr",
   "version": "0.2.0",
-  "description": "A Pi tool for reviewing generated output in Herdr",
+  "description": "A Pi tool for reviewing editable copies of text files in Herdr",
   "license": "MIT",
   "repository": "github:spoj/pi-show-herdr",
   "homepage": "https://github.com/spoj/pi-show-herdr#readme",

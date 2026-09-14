@@ -1,5 +1,5 @@
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -7,8 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 interface ReviewDetails {
-  command: string;
-  exitCode: number;
+  path: string;
   outcome: "unchanged" | "changed" | "unavailable";
 }
 
@@ -37,28 +36,29 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "review",
     label: "Review",
-    description: "Run a Bash script, open an editable copy of its output in a focused Herdr tab, and wait for the user to finish. Returns the paths to the original and reviewed output plus a unified diff. Requires a blocking VISUAL or EDITOR command and an interactive Pi session running in Herdr.",
-    promptSnippet: "Let the user review or edit generated command output in Herdr",
+    description: "Open an editable copy of a text file in a focused Herdr tab and wait for the user to finish. Leaves the source file unchanged. Returns paths to the original snapshot and reviewed copy plus a unified diff, limited to 50 KiB or 2,000 lines. Requires a blocking VISUAL or EDITOR command and an interactive Pi session running in Herdr.",
+    promptSnippet: "Let the user review or edit a copy of a text file in Herdr",
     promptGuidelines: [
-      "Use review when the user should personally inspect or edit generated output.",
+      "Use review when the user should personally inspect or edit a text file. For generated output, first save it to a file with bash, then pass its path to review.",
     ],
     parameters: Type.Object({
-      cmd: Type.String({ description: "Bash script whose combined output the user will review" }),
+      path: Type.String({ description: "Text file to review (relative to the workspace or absolute)" }),
     }),
     executionMode: "sequential",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      signal?.throwIfAborted();
       if (ctx.mode !== "tui") throw new Error(`review requires interactive TUI mode; current mode is ${ctx.mode}`);
       const workspace = process.env.HERDR_WORKSPACE_ID;
       if (process.env.HERDR_ENV !== "1" || !workspace) throw new Error("review requires Herdr");
       const editorCommand = process.env.VISUAL || process.env.EDITOR;
       if (!editorCommand) throw new Error("review requires VISUAL or EDITOR");
 
+      const sourcePath = resolve(ctx.cwd, params.path.replace(/^@/, ""));
       const tempDir = await mkdtemp(join(tmpdir(), "pi-review-"));
       const originalCopy = join(tempDir, "original");
       const reviewedCopy = join(tempDir, "reviewed");
       const editorStatusFile = join(tempDir, "editor-status");
-      const captureStatusFile = join(tempDir, "capture-status");
       const diffStatusFile = join(tempDir, "diff-status");
       const files = `Original: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`;
       const herdr = process.env.HERDR_BIN_PATH || "herdr";
@@ -66,29 +66,10 @@ export default function (pi: ExtensionAPI) {
       let editorLaunched = false;
 
       try {
-        const captureScript = `
-exec > "$1" 2>&1
-trap 'trap "" TERM INT HUP; kill -TERM -- -$$; sleep 1; kill -KILL -- -$$' TERM INT HUP
-trap 'status=$?; trap - EXIT; set +e; wait; printf "%s\\n" "$status" > "$2"; exit "$status"' EXIT
-(
-  trap 'status=$?; trap - EXIT; set +e; wait; exit "$status"' EXIT
-  eval "$3"
-) & commandPid=$!
-while kill -0 "$commandPid" 2>/dev/null; do sleep 0.1; done
-wait "$commandPid"
-`;
-        const capture = await pi.exec(
-          "setsid",
-          ["bash", "-c", captureScript, "pi-review", originalCopy, captureStatusFile, params.cmd],
-          { signal, cwd: ctx.cwd },
-        );
-        const captureCode = await readStatus(captureStatusFile);
-        if (signal?.aborted) throw new Error("Review command was cancelled");
-        if (captureCode === undefined) {
-          const detail = capture.stderr.trim();
-          throw new Error(`Review capture did not complete (setsid or bash may be unavailable, or the capture was killed)${detail ? `: ${detail}` : ""}`);
-        }
+        await copyFile(sourcePath, originalCopy);
+        await chmod(originalCopy, 0o600);
         await copyFile(originalCopy, reviewedCopy);
+        signal?.throwIfAborted();
 
         const created = await pi.exec(
           herdr,
@@ -128,7 +109,7 @@ wait "$commandPid"
         if (editorCode === undefined) throw new Error("Review editor did not complete");
         if (editorCode !== 0) throw new Error(`Review editor exited with code ${editorCode}`);
 
-        const diffScript = `diff -u --label 'original output' --label 'reviewed output' -- ${quote(originalCopy)} ${quote(reviewedCopy)}
+        const diffScript = `diff -u --label 'original file' --label 'reviewed file' -- ${quote(originalCopy)} ${quote(reviewedCopy)}
 printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
         const diff = await pi.exec("bash", ["-c", diffScript], { signal, timeout: 30_000 });
         const diffCode = await readStatus(diffStatusFile);
@@ -137,14 +118,14 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
         let text: string;
         if (!diff.killed && diffCode === 0) {
           outcome = "unchanged";
-          text = `The user finished reviewing the command output. No changes were made. The command exited with code ${captureCode}.\n\n${files}`;
+          text = `The user finished reviewing the file. No changes were made.\n\n${files}`;
         } else if (!diff.killed && diffCode === 1 && diff.stdout.length > 0) {
           outcome = "changed";
           const truncation = truncateHead(diff.stdout);
           const notice = truncation.truncated
             ? `\n\n[Diff too long and truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
             : "";
-          text = `The user changed the generated output. The command exited with code ${captureCode}.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`;
+          text = `The user changed the reviewed copy. The source file was not modified.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`;
         } else {
           outcome = "unavailable";
           const diffDetail = diff.stderr.trim()
@@ -153,11 +134,11 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
               : diffCode === undefined
                 ? "The diff did not complete."
                 : `The diff exited with code ${diffCode}.`);
-          text = `The user finished reviewing the generated output, but the diff could not be generated. Inspect the review files directly. The command exited with code ${captureCode}.\n\n${files}\n\n${diffDetail}`;
+          text = `The user finished reviewing the file, but the diff could not be generated. Inspect the review files directly.\n\n${files}\n\n${diffDetail}`;
         }
         return {
           content: [{ type: "text", text }],
-          details: { command: params.cmd, exitCode: captureCode, outcome } satisfies ReviewDetails,
+          details: { path: sourcePath, outcome } satisfies ReviewDetails,
         };
       } catch (error) {
         if (editorLaunched) {
@@ -174,7 +155,7 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
 
     renderCall(args, theme) {
       return new Text(
-        theme.fg("toolTitle", theme.bold("review ")) + theme.fg("muted", args.cmd),
+        theme.fg("toolTitle", theme.bold("review ")) + theme.fg("muted", args.path),
         0,
         0,
       );
