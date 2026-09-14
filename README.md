@@ -13,6 +13,8 @@ review(cmd)
 3. It opens `reviewed` directly in `$VISUAL`, falling back to `$EDITOR`, in a focused Herdr tab.
 4. When the editor exits, the extension compares the two files and returns the result to the agent.
 
+Like Pi's built-in Bash tool, capture has no automatic runtime or total-output limit; cancellation stops the command. Unlike Bash, `review` writes output to disk immediately so the editor can open the complete file. The 50 KiB / 2,000-line limit applies only to the returned diff, not the files on disk.
+
 For successfully completed reviews, the original and reviewed outputs remain under `/tmp` whether or not the user changed anything, and the result always includes both paths. A unified diff is included when the files differ and truncated to 50 KiB or 2,000 lines when necessary; the result reports the exact number of bytes included. When the diff cannot be generated (missing, killed, or timed out), the result reports `unavailable` and still includes both paths. The agent can inspect the retained files or regenerate the complete diff. The extension does not clean up artifacts from successfully completed reviews; they remain subject to the operating system's normal `/tmp` cleanup.
 
 Once the review tab has opened the editor, a failure or cancellation keeps the original and reviewed files and reports their paths; if the tab is still open, the error also names the tab ID so the user can finish or recover. Failures before the editor launches clean up their temporary files.
