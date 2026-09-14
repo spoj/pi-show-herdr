@@ -277,6 +277,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
+test("the renderer shows errors and expanded review details", () => {
+  let tool!: ToolDefinition;
+  extension({ registerTool: (registered: ToolDefinition) => { tool = registered; } } as ExtensionAPI);
+  const render = tool.renderResult!;
+  const theme = { fg: (_color: string, text: string) => text } as Parameters<typeof render>[2];
+  const context = {} as Parameters<typeof render>[3];
+  const error = { content: [{ type: "text" as const, text: "Review editor exited with code 7\nOriginal: /tmp/original" }], details: undefined };
+  const renderedError = render(error, { expanded: false, isPartial: false }, theme, context) as unknown as { text: string };
+  assert.equal(renderedError.text, error.content[0].text);
+
+  const result = {
+    content: [{ type: "text" as const, text: "Unified diff:\n+user edit\nOriginal: /tmp/original" }],
+    details: { command: "echo hi", exitCode: 0, outcome: "changed" },
+  };
+  const expanded = render(result, { expanded: true, isPartial: false }, theme, context) as unknown as { text: string };
+  assert.equal(expanded.text, result.content[0].text);
+  const collapsed = render(result, { expanded: false, isPartial: false }, theme, context) as unknown as { text: string };
+  assert.equal(collapsed.text, "Review complete — changes returned");
+});
+
 test("nonzero command exit is reviewed and reported", async () => {
   const h = await createHarness();
   try {
@@ -285,6 +305,45 @@ test("nonzero command exit is reviewed and reported", async () => {
     assert.equal(result.details.exitCode, 3);
     assert.match(result.content[0].text, /exited with code 3/);
     assertKept(result.content[0].text);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a script syntax error is captured and reviewed", async () => {
+  const h = await createHarness();
+  try {
+    const result = await h.execute('printf "unterminated');
+    assert.equal(result.details.exitCode, 2);
+    const paths = reviewPaths(result.content[0].text);
+    assert.match(readFileSync(paths.original, "utf8"), /unexpected EOF/);
+    assertKept(result.content[0].text);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("an EOF-terminated heredoc cannot consume the capture wrapper", async () => {
+  const h = await createHarness();
+  try {
+    const result = await h.execute("cat <<EOF\nhello");
+    assert.equal(result.details.exitCode, 0);
+    const paths = reviewPaths(result.content[0].text);
+    const output = readFileSync(paths.original, "utf8");
+    assert.match(output, /hello\n$/);
+    assert.doesNotMatch(output, /commandPid/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("capture waits for background output and preserves the script exit code", async () => {
+  const h = await createHarness();
+  try {
+    const result = await h.execute("printf 'early\\n'; (sleep 0.2; printf 'late\\n') & exit 4");
+    assert.equal(result.details.exitCode, 4);
+    const paths = reviewPaths(result.content[0].text);
+    assert.equal(readFileSync(paths.original, "utf8"), "early\nlate\n");
   } finally {
     await h.cleanup();
   }

@@ -71,14 +71,14 @@ trap 'trap "" TERM INT HUP; kill -TERM -- -$$; sleep 1; kill -KILL -- -$$' TERM 
 trap 'status=$?; trap - EXIT; set +e; wait; printf "%s\\n" "$status" > "$2"; exit "$status"' EXIT
 (
   trap 'status=$?; trap - EXIT; set +e; wait; exit "$status"' EXIT
-  ${params.cmd}
+  eval "$3"
 ) & commandPid=$!
 while kill -0 "$commandPid" 2>/dev/null; do sleep 0.1; done
 wait "$commandPid"
 `;
         const capture = await pi.exec(
           "setsid",
-          ["bash", "-c", captureScript, "pi-review", originalCopy, captureStatusFile],
+          ["bash", "-c", captureScript, "pi-review", originalCopy, captureStatusFile, params.cmd],
           { signal, cwd: ctx.cwd },
         );
         const captureCode = await readStatus(captureStatusFile);
@@ -212,9 +212,12 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
       );
     },
 
-    renderResult(result, _options, theme) {
+    renderResult(result, { expanded }, theme) {
       const details = result.details as ReviewDetails | undefined;
-      if (!details) return new Text("", 0, 0);
+      if (!details || expanded) {
+        const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+        return new Text(theme.fg(details ? "toolOutput" : "error", text), 0, 0);
+      }
       const text = details.outcome === "unchanged"
         ? "Review complete — no changes"
         : details.outcome === "changed"
