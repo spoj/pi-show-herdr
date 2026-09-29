@@ -45,6 +45,8 @@ export default function (pi: ExtensionAPI) {
       path: Type.String({ description: "Text file to review (relative to the workspace or absolute)" }),
     }),
     executionMode: "sequential",
+    // It waits for the user, so codemode scripts must not call it.
+    exposure: "model-only",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();

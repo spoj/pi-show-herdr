@@ -19,7 +19,7 @@ The original snapshot and reviewed copy remain under the operating system's temp
 
 Once the editor has launched, a failure or cancellation keeps both copies and reports their paths; if the tab is still open, the error also names its ID so the user can finish or recover. Failures before the editor launches clean up their temporary copies.
 
-`$VISUAL` or `$EDITOR` must be a blocking editor command that does not return until the user finishes (for example, `nvim` or `code --wait`). `review` fails outside interactive Pi sessions running in Herdr.
+`$VISUAL` or `$EDITOR` must be a blocking editor command that does not return until the user finishes (for example, `nvim` or `code --wait`). `review` fails outside interactive Pi sessions running in Herdr. Only the model can call it; Pi's codemode scripts cannot.
 
 ## Install
 
