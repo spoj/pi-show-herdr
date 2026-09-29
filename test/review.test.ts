@@ -6,7 +6,7 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 const STUBS: Record<string, string> = {
   "@earendil-works/pi-coding-agent": `
@@ -221,7 +221,7 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
     },
   } as ExtensionAPI);
 
-  const ctx = { mode: "tui", cwd: root, hasUI: false } as ExtensionContext;
+  const ctx = { mode: "tui", cwd: root, hasUI: false } as ExtensionToolContext;
   const killPane = () => {
     const pidFile = join(stateDir, "pane.pid");
     if (!existsSync(pidFile)) return;
