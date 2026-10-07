@@ -8,29 +8,11 @@ import { Type } from "typebox";
 
 interface ReviewDetails {
   path: string;
-  outcome: "unchanged" | "changed" | "unavailable";
+  changed: boolean;
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-
-async function readStatus(path: string): Promise<number | undefined> {
-  try {
-    const value = Number.parseInt((await readFile(path, "utf8")).trim(), 10);
-    return Number.isInteger(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-const editor = `
-file=$1
-statusFile=$2
-editor=\${VISUAL:-$EDITOR}
-eval "$editor" '"$file"'
-status=$?
-printf '%s\\n' "$status" > "$statusFile"
-exit "$status"
-`;
+const editor = `eval "$VISUAL" '"$1"'; printf '%s\\n' "$?" > "$2"`;
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
@@ -46,10 +28,9 @@ export default function (pi: ExtensionAPI) {
     exposure: "model-only",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted();
       if (ctx.mode !== "tui") throw new Error(`review requires interactive TUI mode; current mode is ${ctx.mode}`);
       const workspace = process.env.HERDR_WORKSPACE_ID;
-      if (process.env.HERDR_ENV !== "1" || !workspace) throw new Error("review requires Herdr");
+      if (!workspace) throw new Error("review requires Herdr");
       const editorCommand = process.env.VISUAL || process.env.EDITOR;
       if (!editorCommand) throw new Error("review requires VISUAL or EDITOR");
 
@@ -58,7 +39,6 @@ export default function (pi: ExtensionAPI) {
       const originalCopy = join(tempDir, "original");
       const reviewedCopy = join(tempDir, "reviewed");
       const editorStatusFile = join(tempDir, "editor-status");
-      const diffStatusFile = join(tempDir, "diff-status");
       const files = `Original: ${originalCopy}\nUser-reviewed: ${reviewedCopy}`;
       const herdr = process.env.HERDR_BIN_PATH || "herdr";
       let tabId: string | undefined;
@@ -81,72 +61,42 @@ export default function (pi: ExtensionAPI) {
           result: { tab: { tab_id: string }; root_pane: { pane_id: string } };
         };
         tabId = result.result.tab.tab_id;
-        const paneId = result.result.root_pane.pane_id;
         const command = `/bin/sh -c ${quote(editor)} review ${quote(reviewedCopy)} ${quote(editorStatusFile)}; exit`;
-        const run = await pi.exec(herdr, ["pane", "run", paneId, command], { signal, timeout: 5000 });
+        const run = await pi.exec(herdr, ["pane", "run", result.result.root_pane.pane_id, command], { signal, timeout: 5000 });
         if (run.killed || run.code !== 0) throw new Error("Herdr could not launch the editor");
         editorLaunched = true;
 
-        while (true) {
-          await delay(500, undefined, { signal });
-          const tab = await pi.exec(herdr, ["tab", "get", tabId], { signal, timeout: 5000 });
-          if (tab.killed) throw new Error("Herdr could not read the review tab");
-          if (tab.code === 0) continue;
-
-          let errorCode: string | undefined;
-          try {
-            errorCode = (JSON.parse(tab.stderr) as { error?: { code?: string } }).error?.code;
-          } catch {}
-          if (errorCode !== "tab_not_found") {
-            throw new Error(`Herdr could not read the review tab: ${tab.stderr.trim() || tab.stdout.trim()}`);
-          }
-          break;
-        }
+        // Herdr closes the tab when the editor's shell exits.
+        do await delay(500, undefined, { signal });
+        while ((await pi.exec(herdr, ["tab", "get", tabId], { signal, timeout: 5000 })).code === 0);
         tabId = undefined;
 
-        const editorCode = await readStatus(editorStatusFile);
+        const editorCode = await readFile(editorStatusFile, "utf8").then((status) => status.trim(), () => undefined);
         if (editorCode === undefined) throw new Error("Review editor did not complete");
-        if (editorCode !== 0) throw new Error(`Review editor exited with code ${editorCode}`);
+        if (editorCode !== "0") throw new Error(`Review editor exited with code ${editorCode}`);
 
-        const diffScript = `diff -u --label 'original file' --label 'reviewed file' -- ${quote(originalCopy)} ${quote(reviewedCopy)}
-printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
-        const diff = await pi.exec("bash", ["-c", diffScript], { signal, timeout: 30_000 });
-        const diffCode = await readStatus(diffStatusFile);
-
-        let outcome: ReviewDetails["outcome"];
-        let text: string;
-        if (!diff.killed && diffCode === 0) {
-          outcome = "unchanged";
-          text = `The user made no changes.\n\n${files}`;
-        } else if (!diff.killed && diffCode === 1 && diff.stdout.length > 0) {
-          outcome = "changed";
+        const [before, after] = await Promise.all([readFile(originalCopy), readFile(reviewedCopy)]);
+        const changed = !before.equals(after);
+        let text = `The user made no changes.\n\n${files}`;
+        if (changed) {
+          const diff = await pi.exec("diff", ["-u", "--label", "original file", "--label", "reviewed file", "--", originalCopy, reviewedCopy], { signal, timeout: 30_000 });
           const truncation = truncateHead(diff.stdout);
-          const notice = truncation.truncated
-            ? `\n\n[Diff truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
-            : "";
-          text = `The user changed the reviewed copy. The source file was not modified.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`;
-        } else {
-          outcome = "unavailable";
-          const diffDetail = diff.stderr.trim()
-            || (diff.killed
-              ? "The diff timed out."
-              : diffCode === undefined
-                ? "The diff did not complete."
-                : `The diff exited with code ${diffCode}.`);
-          text = `The user finished reviewing the file, but the diff could not be generated.\n\n${files}\n\n${diffDetail}`;
+          const notice = truncation.truncated ? `\n\n[Diff truncated after ${truncation.outputBytes.toLocaleString()} bytes.]` : "";
+          text = diff.stdout && !diff.killed
+            ? `The user changed the reviewed copy. The source file was not modified.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`
+            : `The user changed the reviewed copy, but the diff could not be generated.\n\n${files}\n\n${diff.killed ? "The diff timed out." : diff.stderr.trim()}`;
         }
         return {
           content: [{ type: "text", text }],
-          details: { path: sourcePath, outcome } satisfies ReviewDetails,
+          details: { path: sourcePath, changed } satisfies ReviewDetails,
         };
       } catch (error) {
-        if (editorLaunched) {
-          const message = error instanceof Error ? error.message : String(error);
-          const tabNote = tabId ? `\nThe review tab (${tabId}) is still open.` : "";
-          throw new Error(`${message}\n\nThe review files were kept:${tabNote}\n${files}`);
+        if (!editorLaunched) {
+          if (tabId) await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
+          throw error;
         }
-        if (tabId) await pi.exec(herdr, ["tab", "close", tabId], { timeout: 5000 });
-        throw error;
+        const tabNote = tabId ? `\nThe review tab (${tabId}) is still open.` : "";
+        throw new Error(`${(error as Error).message}\n\nThe review files were kept:${tabNote}\n${files}`);
       } finally {
         if (!editorLaunched) await rm(tempDir, { recursive: true, force: true });
       }
@@ -166,12 +116,7 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
         const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
         return new Text(theme.fg(details ? "toolOutput" : "error", text), 0, 0);
       }
-      const text = details.outcome === "unchanged"
-        ? "Review complete — no changes"
-        : details.outcome === "changed"
-          ? "Review complete — changes returned"
-          : "Review complete — diff unavailable";
-      return new Text(theme.fg(details.outcome === "unavailable" ? "warning" : "success", text), 0, 0);
+      return new Text(theme.fg("success", details.changed ? "Review complete — changes returned" : "Review complete — no changes"), 0, 0);
     },
   });
 }

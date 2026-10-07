@@ -2,47 +2,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-
-const STUBS: Record<string, string> = {
-  "@earendil-works/pi-coding-agent": `
-export function truncateHead(text, options = {}) {
-  const maxBytes = options.maxBytes ?? 50 * 1024;
-  const maxLines = options.maxLines ?? 2000;
-  const lines = text.split("\\n");
-  const kept = [];
-  let bytes = 0;
-  for (const line of lines) {
-    if (kept.length >= maxLines) break;
-    const size = Buffer.byteLength(line) + (kept.length > 0 ? 1 : 0);
-    if (bytes + size > maxBytes) break;
-    kept.push(line);
-    bytes += size;
-  }
-  const content = kept.join("\\n");
-  return { content, truncated: kept.length < lines.length, outputBytes: Buffer.byteLength(content), totalBytes: Buffer.byteLength(text), outputLines: kept.length, totalLines: lines.length };
-}
-`,
-  "@earendil-works/pi-tui": `export class Text { constructor(text) { this.text = text; } }`,
-  typebox: `export const Type = {
-  Object: (properties) => ({ type: "object", properties }),
-  String: (options = {}) => ({ type: "string", ...options }),
-};`,
-};
-
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const stub = STUBS[specifier];
-    if (stub) return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(stub)}` };
-    return nextResolve(specifier, context);
-  },
-});
-
-const { default: extension } = await import("../index.ts");
+import extension from "../index.ts";
 
 interface ExecResult {
   stdout: string;
@@ -181,7 +145,7 @@ interface Harness {
   root: string;
   stateDir: string;
   setEditorMode(mode: string): void;
-  execute(path: string, signal?: AbortSignal): Promise<{ content: { text: string }[]; details: { outcome: string; path: string } }>;
+  execute(path: string, signal?: AbortSignal): Promise<{ content: { text: string }[]; details: { changed: boolean; path: string } }>;
   cleanup(): Promise<void>;
 }
 
@@ -214,7 +178,7 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
   extension({
     exec: async (...args: Parameters<Exec>) => {
       const result = await exec(...args);
-      return options.diffKilled && args[0] === "bash" ? { ...result, killed: true } : result;
+      return options.diffKilled && args[0] === "diff" ? { ...result, killed: true } : result;
     },
     registerTool: (registered: ToolDefinition) => {
       tool = registered;
@@ -290,7 +254,7 @@ test("the renderer shows errors and expanded review details", () => {
 
   const result = {
     content: [{ type: "text" as const, text: "Unified diff:\n+user edit\nOriginal: /tmp/original" }],
-    details: { path: "source.txt", outcome: "changed" },
+    details: { path: "source.txt", changed: true },
   };
   const expanded = render(result, { expanded: true, isPartial: false }, theme, context) as unknown as { text: string };
   assert.equal(expanded.text, result.content[0].text);
@@ -305,7 +269,7 @@ for (const kind of ["relative", "absolute", "@-prefixed"]) {
       const source = join(h.root, "source.txt");
       const path = kind === "absolute" ? source : kind === "@-prefixed" ? "@source.txt" : "source.txt";
       const result = await h.execute(path);
-      assert.deepEqual(result.details, { path: source, outcome: "unchanged" });
+      assert.deepEqual(result.details, { path: source, changed: false });
       const paths = reviewPaths(result.content[0].text);
       assert.equal(readFileSync(paths.original, "utf8"), "hello\n");
       assert.equal(readFileSync(paths.reviewed, "utf8"), "hello\n");
@@ -321,7 +285,7 @@ test("file paths with shell metacharacters are treated literally", async () => {
     const name = "file 'quoted'; $(touch sentinel).txt";
     await writeFile(join(h.root, name), "literal contents");
     const result = await h.execute(name);
-    assert.equal(result.details.outcome, "unchanged");
+    assert.equal(result.details.changed, false);
     assert.equal(existsSync(join(h.root, "sentinel")), false);
     assert.equal(readFileSync(reviewPaths(result.content[0].text).original, "utf8"), "literal contents");
   } finally {
@@ -334,7 +298,7 @@ test("edits return a unified diff without modifying the source file", async () =
   try {
     h.setEditorMode("edit");
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "changed");
+    assert.equal(result.details.changed, true);
     assert.match(result.content[0].text, /\+user edit/);
     assert.match(result.content[0].text, /--- original file\n\+\+\+ reviewed file/);
     assertKept(result.content[0].text);
@@ -354,7 +318,7 @@ test("a read-only source produces an editable copy", async () => {
     await chmod(join(h.root, "source.txt"), 0o444);
     h.setEditorMode("edit");
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "changed");
+    assert.equal(result.details.changed, true);
     assert.equal(readFileSync(join(h.root, "source.txt"), "utf8"), "hello\n");
   } finally {
     await h.cleanup();
@@ -368,7 +332,7 @@ for (const size of [0, 100_000]) {
       const content = "x".repeat(size);
       await writeFile(join(h.root, "source.txt"), content);
       const result = await h.execute("source.txt");
-      assert.equal(result.details.outcome, "unchanged");
+      assert.equal(result.details.changed, false);
       const paths = reviewPaths(result.content[0].text);
       assert.equal(readFileSync(paths.original, "utf8"), content);
       assert.equal(readFileSync(paths.reviewed, "utf8"), content);
@@ -437,11 +401,12 @@ test("aborting while the editor is open keeps files, paths, and the tab", async 
   }
 });
 
-test("tab poll failure keeps files and reports paths", async () => {
+test("a failing tab poll ends the wait and keeps the files", async () => {
   const h = await createHarness({ tabGetError: "server_busy" });
   try {
+    h.setEditorMode("hang");
     await assert.rejects(h.execute("source.txt"), (error: Error) => {
-      assert.match(error.message, /Herdr could not read the review tab/);
+      assert.match(error.message, /Review editor did not complete/);
       assertKept(error.message);
       return true;
     });
@@ -450,7 +415,7 @@ test("tab poll failure keeps files and reports paths", async () => {
   }
 });
 
-test("a signal-killed diff is unavailable, not 'no changes'", async () => {
+test("a signal-killed diff is reported", async () => {
   const h = await createHarness();
   try {
     h.setEditorMode("edit");
@@ -461,15 +426,15 @@ test("a signal-killed diff is unavailable, not 'no changes'", async () => {
     await chmod(diffPath, 0o755);
     process.env.PATH = `${binDir}:${process.env.PATH}`;
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "unavailable");
-    assert.match(result.content[0].text, /Killed/);
+    assert.equal(result.details.changed, true);
+    assert.match(result.content[0].text, /diff could not be generated/);
     assertKept(result.content[0].text);
   } finally {
     await h.cleanup();
   }
 });
 
-test("a diff that exits 1 with no output is unavailable, not a change", async () => {
+test("a diff without output is reported", async () => {
   const h = await createHarness();
   try {
     h.setEditorMode("edit");
@@ -480,18 +445,21 @@ test("a diff that exits 1 with no output is unavailable, not a change", async ()
     await chmod(diffPath, 0o755);
     process.env.PATH = `${binDir}:${process.env.PATH}`;
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "unavailable");
+    assert.equal(result.details.changed, true);
+    assert.match(result.content[0].text, /diff could not be generated/);
     assertKept(result.content[0].text);
   } finally {
     await h.cleanup();
   }
 });
 
-test("a timed-out diff is unavailable even if it wrote a success status", async () => {
+test("a timed-out diff is reported", async () => {
   const h = await createHarness({ diffKilled: true });
   try {
+    h.setEditorMode("edit");
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "unavailable");
+    assert.equal(result.details.changed, true);
+    assert.match(result.content[0].text, /diff could not be generated/);
     assert.match(result.content[0].text, /The diff timed out/);
     assertKept(result.content[0].text);
   } finally {
@@ -499,13 +467,13 @@ test("a timed-out diff is unavailable even if it wrote a success status", async 
   }
 });
 
-test("a diff that cannot start is unavailable", async () => {
-  const h = await createHarness({ missing: ["bash"] });
+test("a diff that cannot start is reported", async () => {
+  const h = await createHarness({ missing: ["diff"] });
   try {
     h.setEditorMode("edit");
     const result = await h.execute("source.txt");
-    assert.equal(result.details.outcome, "unavailable");
-    assert.match(result.content[0].text, /The diff did not complete/);
+    assert.equal(result.details.changed, true);
+    assert.match(result.content[0].text, /diff could not be generated/);
     assertKept(result.content[0].text);
   } finally {
     await h.cleanup();
