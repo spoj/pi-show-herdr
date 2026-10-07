@@ -242,8 +242,18 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
+test("review is registered only inside Herdr", () => {
+  const names: string[] = [];
+  delete process.env.HERDR_WORKSPACE_ID;
+  extension({ registerTool: (tool: ToolDefinition) => names.push(tool.name) } as unknown as ExtensionAPI);
+  process.env.HERDR_WORKSPACE_ID = "test-workspace";
+  extension({ registerTool: (tool: ToolDefinition) => names.push(tool.name) } as unknown as ExtensionAPI);
+  assert.deepEqual(names, ["review"]);
+});
+
 test("the renderer shows errors and expanded review details", () => {
   let tool!: ToolDefinition;
+  process.env.HERDR_WORKSPACE_ID = "test-workspace";
   extension({ registerTool: (registered: ToolDefinition) => { tool = registered; } } as ExtensionAPI);
   const render = tool.renderResult!;
   const theme = { fg: (_color: string, text: string) => text } as Parameters<typeof render>[2];

@@ -15,6 +15,7 @@ const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 const editor = `eval "$VISUAL" '"$1"'; printf '%s\\n' "$?" > "$2"`;
 
 export default function (pi: ExtensionAPI) {
+  if (!process.env.HERDR_WORKSPACE_ID) return;
   pi.registerTool({
     name: "review",
     label: "Review",
@@ -29,8 +30,7 @@ export default function (pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (ctx.mode !== "tui") throw new Error(`review requires interactive TUI mode; current mode is ${ctx.mode}`);
-      const workspace = process.env.HERDR_WORKSPACE_ID;
-      if (!workspace) throw new Error("review requires Herdr");
+      const workspace = process.env.HERDR_WORKSPACE_ID!;
       const editorCommand = process.env.VISUAL || process.env.EDITOR;
       if (!editorCommand) throw new Error("review requires VISUAL or EDITOR");
 
