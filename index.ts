@@ -36,11 +36,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "review",
     label: "Review",
-    description: "Open an editable copy of a text file in a focused Herdr tab and wait for the user to finish. Leaves the source file unchanged. Returns paths to the original snapshot and reviewed copy plus a unified diff, limited to 50 KiB or 2,000 lines. Requires a blocking VISUAL or EDITOR command and an interactive Pi session running in Herdr.",
+    description: "Open an editable copy of a text file in a Herdr tab and wait for the user to finish. Returns the user's changes as a unified diff.",
     promptSnippet: "Let the user review or edit a copy of a text file in Herdr",
-    promptGuidelines: [
-      "Use review when the user should personally inspect or edit a text file. For generated output, first save it to a file with bash, then pass its path to review.",
-    ],
     parameters: Type.Object({
       path: Type.String({ description: "Text file to review (relative to the workspace or absolute)" }),
     }),
@@ -120,12 +117,12 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
         let text: string;
         if (!diff.killed && diffCode === 0) {
           outcome = "unchanged";
-          text = `The user finished reviewing the file. No changes were made.\n\n${files}`;
+          text = `The user made no changes.\n\n${files}`;
         } else if (!diff.killed && diffCode === 1 && diff.stdout.length > 0) {
           outcome = "changed";
           const truncation = truncateHead(diff.stdout);
           const notice = truncation.truncated
-            ? `\n\n[Diff too long and truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
+            ? `\n\n[Diff truncated after ${truncation.outputBytes.toLocaleString()} bytes.]`
             : "";
           text = `The user changed the reviewed copy. The source file was not modified.\n\nUnified diff:\n${truncation.content}${notice}\n\n${files}`;
         } else {
@@ -136,7 +133,7 @@ printf '%s\\n' "$?" > ${quote(diffStatusFile)}`;
               : diffCode === undefined
                 ? "The diff did not complete."
                 : `The diff exited with code ${diffCode}.`);
-          text = `The user finished reviewing the file, but the diff could not be generated. Inspect the review files directly.\n\n${files}\n\n${diffDetail}`;
+          text = `The user finished reviewing the file, but the diff could not be generated.\n\n${files}\n\n${diffDetail}`;
         }
         return {
           content: [{ type: "text", text }],
