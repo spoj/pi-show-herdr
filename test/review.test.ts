@@ -129,6 +129,11 @@ esac
 exit 0
 `;
 
+// Loads the extension and starts its session in the given mode.
+function load(pi: object, mode = "tui") {
+  extension({ ...pi, on: (_event: string, start: (event: object, ctx: object) => void) => start({}, { mode }) } as unknown as ExtensionAPI);
+}
+
 const ENV_KEYS = [
   "HERDR_ENV",
   "HERDR_WORKSPACE_ID",
@@ -175,7 +180,7 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
 
   let tool: ToolDefinition;
   const exec = makeExec(options.missing ?? []);
-  extension({
+  load({
     exec: async (...args: Parameters<Exec>) => {
       const result = await exec(...args);
       return options.diffKilled && args[0] === "diff" ? { ...result, killed: true } : result;
@@ -183,9 +188,9 @@ async function createHarness(options: { missing?: string[]; tabGetError?: string
     registerTool: (registered: ToolDefinition) => {
       tool = registered;
     },
-  } as ExtensionAPI);
+  });
 
-  const ctx = { mode: "tui", cwd: root, hasUI: false } as ExtensionToolContext;
+  const ctx = { cwd: root, hasUI: false } as ExtensionToolContext;
   const killPane = () => {
     const pidFile = join(stateDir, "pane.pid");
     if (!existsSync(pidFile)) return;
@@ -242,19 +247,22 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<vo
   }
 }
 
-test("review is registered only inside Herdr", () => {
+test("review is registered only in interactive sessions inside Herdr", () => {
   const names: string[] = [];
+  const pi = { registerTool: (tool: ToolDefinition) => names.push(tool.name) };
   delete process.env.HERDR_WORKSPACE_ID;
-  extension({ registerTool: (tool: ToolDefinition) => names.push(tool.name) } as unknown as ExtensionAPI);
+  load(pi);
   process.env.HERDR_WORKSPACE_ID = "test-workspace";
-  extension({ registerTool: (tool: ToolDefinition) => names.push(tool.name) } as unknown as ExtensionAPI);
+  load(pi, "print");
+  assert.deepEqual(names, []);
+  load(pi);
   assert.deepEqual(names, ["review"]);
 });
 
 test("the renderer shows errors and expanded review details", () => {
   let tool!: ToolDefinition;
   process.env.HERDR_WORKSPACE_ID = "test-workspace";
-  extension({ registerTool: (registered: ToolDefinition) => { tool = registered; } } as ExtensionAPI);
+  load({ registerTool: (registered: ToolDefinition) => { tool = registered; } });
   const render = tool.renderResult!;
   const theme = { fg: (_color: string, text: string) => text } as Parameters<typeof render>[2];
   const context = {} as Parameters<typeof render>[3];
